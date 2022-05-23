@@ -1,0 +1,98 @@
+SELECT 
+       MIN(sessions.sessions) as sessions,
+       MIN(sessions.pageview) as pageview,
+       MIN(sessions.bounces) as bounces,
+       MIN(sessions.timeonsite) as timeonsite,
+       MIN(sessions.users) as users,
+       MIN(sessions.new_users) as new_users,
+       sessions.device as device,
+       sessions.browser as browser,
+       sessions.state as state,
+       sessions.date as date,
+       sessions.LP,
+       sessions.EP,
+       sessions.src,
+       sessions.adg,
+       sessions.cmp,
+       sessions.channelGrouping as channelGrouping,
+       sessions.medium as medium,
+       sessions.source as source,
+       events.eventcategory as eventcategory,
+       events.eventlabel as eventlabel,
+       events.eventAction as eventaction,
+       COUNT(distinct sessionID) as events_sessions
+FROM(
+
+SELECT                                                                                                                                          
+      COUNT(distinct concat(fullvisitorid,'.', cast(visitstarttime as string))) as sessions,
+      DATE(CONCAT(LEFT(Date,4),"-",LEFT(RIGHT(Date,4),2),"-",RIGHT(Date,2))) as date,                                                                                                                                           
+      channelGrouping,  
+      trafficSource.source as source,
+      trafficSource.medium as medium,                                                                                                                                   
+      device.deviceCategory as device,
+      device.browser as browser, 
+      geoNetwork.region as state,                                                                                                                                                                                                                                           
+      SUM(totals.timeOnSite) as timeOnSite, 
+      REGEXP_EXTRACT((SELECT MAX(IF (h.isentrance,h.page.pagepath, null)) FROM UNNEST(hits) as h),'[^?]+') as LP,
+      REGEXP_EXTRACT((SELECT MAX(IF (h.isexit,h.page.pagepath, null)) FROM UNNEST(hits) as h),'[^?]+') as EP,
+      IFNULL(regexp_extract((select MAX(IF (h.isentrance,h.page.pagepath, null)) FROM UNNEST(hits) as h),'[?&]src=([^&]+)'),'null') as SRC,
+      IFNULL(regexp_extract((select MAX(IF (h.isentrance,h.page.pagepath, null)) FROM UNNEST(hits) as h),'[?&]adg=([^&]+)'),'null') as ADG,
+      IFNULL(regexp_extract((select MAX(IF (h.isentrance,h.page.pagepath, null)) FROM UNNEST(hits) as h),'[?&]cmp=([^&]+)'),'null') as CMP,
+      SUM((SELECT SUM(IF (h.type='PAGE',1, null)) FROM UNNEST(hits) as h)) as pageview,
+      COUNT(DISTINCT fullvisitorid) as users,
+      COUNT(DISTINCT(CASE WHEN totals.newVisits = 1 then fullvisitorid else null end)) as new_users,
+      COUNT(DISTINCT CASE WHEN totals.bounces = 1 then concat(fullvisitorid,'.', cast(visitstarttime as string)) else null end) as bounces
+  FROM
+      `XXXXXXXXXXXX.ga_sessions_*` g
+    WHERE
+       regexp_extract(_table_suffix,'[0-9]+') BETWEEN FORMAT_DATE("%Y%m%d", DATE_SUB(CURRENT_DATE(), INTERVAL 180 DAY))
+        AND FORMAT_DATE("%Y%m%d",CURRENT_DATE())
+        AND totals.visits=1 AND device.browser != 'SmarshBot'
+
+GROUP BY date,device,browser,state,channelGrouping,source,medium,LP,EP,SRC,ADG,CMP) as sessions
+
+LEFT JOIN (
+             SELECT sessionID,
+                    eventcategory,
+                    eventlabel,
+                    eventAction,
+                    Date,
+                    device,    
+                    browser,
+                    state,
+                    channelGrouping,
+                    source,
+                    medium,
+                    REGEXP_EXTRACT(landingPage,'[^?]+') as LP,
+                    REGEXP_EXTRACT(exitPage,'[^?]+') as EP,
+                    IFNULL(REGEXP_EXTRACT(landingPage,'[?&]src=([^&]+)'),'null') as SRC,
+                    IFNULL(REGEXP_EXTRACT(landingPage,'[?&]adg=([^&]+)'),'null') as ADG,
+                    IFNULL(REGEXP_EXTRACT(landingPage,'[?&]cmp=([^&]+)'),'null') as CMP 
+             FROM(
+                  SELECT CONCAT(fullvisitorid,'.', CAST(visitstarttime as string)) AS sessionID,
+                                h.hitnumber as hitNumber,
+                                DATE(CONCAT(LEFT(Date,4),"-",LEFT(RIGHT(Date,4),2),"-",RIGHT(Date,2))) AS Date,
+                                h.eventInfo.eventCategory as eventcategory,
+                                h.eventInfo.eventLabel as eventlabel,
+                                h.eventInfo.eventAction as eventAction,
+                                channelGrouping,
+                                trafficSource.source as source,
+                                trafficSource.medium as medium,
+                                device.deviceCategory as device,
+                                device.browser as browser,
+                                geoNetwork.region as state,
+                                MAX(IF (h.isentrance,h.page.pagepath, null)) OVER(partition by fullvisitorid,visitid) as landingPage,
+                                MAX(CASE WHEN h.isexit = true then h.page.pagepath else null end) OVER(partition by fullvisitorid,visitid) as exitPage      
+                   FROM `#######.ga_sessions_*` g,
+                   UNNEST(hits) AS h
+                   WHERE REGEXP_EXTRACT(_table_suffix,'[0-9]+') 
+                          BETWEEN FORMAT_DATE("%Y%m%d", DATE_SUB(CURRENT_DATE(), INTERVAL 180 DAY)) AND FORMAT_DATE("%Y%m%d",CURRENT_DATE()) 
+                          AND totals.visits=1 AND device.browser != 'SmarshBot' 
+                               ) 
+                 WHERE eventCategory = 'Scroll Depth' OR eventAction = 'Submit' OR (eventlabel = 'email' AND eventAction = 'Advance To Section') # change the filter based on your need
+               
+   ) AS events ON (sessions.Date = events.date AND sessions.device =events.device AND sessions.browser=events.browser AND sessions.source = events.source
+                   AND sessions.LP=events.LP AND sessions.EP=events.EP AND sessions.SRC=events.SRC AND sessions.medium = events.medium AND sessions.state= events.state
+                    AND sessions.ADG=events.ADG AND sessions.CMP = events.CMP AND Sessions.channelGrouping=Events.channelGrouping)
+
+GROUP BY eventcategory,eventaction,eventlabel,date,device,browser,LP,EP,src,adg,cmp,channelGrouping,source,medium,state
